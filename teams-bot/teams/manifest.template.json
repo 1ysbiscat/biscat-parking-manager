@@ -1,0 +1,51 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "${MICROSOFT_APP_ID}",
+  "packageName": "com.biscat.parking",
+  "developer": {
+    "name": "BISCAT",
+    "websiteUrl": "https://example.com",
+    "privacyUrl": "https://example.com/privacy",
+    "termsOfUseUrl": "https://example.com/terms"
+  },
+  "name": {
+    "short": "BISCAT Parking",
+    "full": "BISCAT Parking Manager"
+  },
+  "description": {
+    "short": "Simple office parking check-in/check-out for Teams.",
+    "full": "BISCAT Parking Manager lets employees check in and check out of the two office parking spots directly from Microsoft Teams."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#0F6CBD",
+  "bots": [
+    {
+      "botId": "${MICROSOFT_APP_ID}",
+      "scopes": ["team", "personal", "groupchat"],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["team", "personal", "groupchat"],
+          "commands": [
+            {
+              "title": "parking",
+              "description": "Show the current parking status"
+            },
+            {
+              "title": "admin",
+              "description": "Show admin parking controls"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["your-public-bot-domain.example.com"]
+}
