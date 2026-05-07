@@ -281,8 +281,7 @@ export default function Home() {
 
     await fetchSessions();
 
-    setEmployee
-        setEmployeeName("");
+    setEmployeeName("");
     setMessage("전체 초기화 완료");
   }
 
