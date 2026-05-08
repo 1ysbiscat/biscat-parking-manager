@@ -3,8 +3,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
-const TOTAL_SPOTS = 2;
-
 const EMPLOYEE_LIST = [
   "고동욱",
   "최병훈",
@@ -18,58 +16,69 @@ const EMPLOYEE_LIST = [
   "이준혁",
 ];
 
-type ParkingSession = {
-  id: string;
-  employee_name: string;
-  spot_no: number;
-  checked_in_at: string;
-  car_number?: string | null;
-};
+const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
+const MOBILE_WEEKDAYS = ["월", "화", "수", "목", "금"];
+
+const TIME_SLOTS = [
+  { value: "morning", label: "오전" },
+  { value: "afternoon", label: "오후" },
+  { value: "full_day", label: "종일" },
+] as const;
+
+type TimeSlot = "morning" | "afternoon" | "full_day";
+type ActionType = "reserve" | "cancel";
 
 type ParkingReservation = {
   id: string;
   employee_name: string;
   reserved_date: string;
   spot_no: number;
-  car_number?: string | null;
+  time_slot: TimeSlot;
   created_at: string;
 };
 
+type ParkingLog = {
+  id: string;
+  message: string;
+  action_type?: ActionType;
+  employee_name?: string;
+  target_date?: string;
+  time_slot?: TimeSlot;
+  spot_no?: number;
+  created_at: string;
+};
+
+type Toast = {
+  message: string;
+  type: "success" | "error";
+};
+
+type CalendarDay = {
+  date: string;
+  dayNumber: number;
+  monthLabel: string;
+  isToday: boolean;
+  isCurrentRange: boolean;
+};
+
 export default function Home() {
-  const [employeeName, setEmployeeName] = useState("");
   const [reservationName, setReservationName] = useState("");
   const [selectedDate, setSelectedDate] = useState(getTodayString());
+  const [selectedTimeSlot, setSelectedTimeSlot] =
+    useState<TimeSlot>("full_day");
 
-  const [sessions, setSessions] = useState<ParkingSession[]>([]);
   const [reservations, setReservations] = useState<ParkingReservation[]>([]);
-  const [twoWeekReservations, setTwoWeekReservations] = useState<ParkingReservation[]>([]);
+  const [calendarReservations, setCalendarReservations] = useState<
+    ParkingReservation[]
+  >([]);
+  const [logs, setLogs] = useState<ParkingLog[]>([]);
+  const [toast, setToast] = useState<Toast | null>(null);
 
-  const [message, setMessage] = useState("주차할 직원을 선택해주세요.");
-  const [reservationMessage, setReservationMessage] =
-    useState("날짜와 직원을 선택해 예약할 수 있습니다.");
-  const [loading, setLoading] = useState(true);
-
-  const twoWeekDays = useMemo(() => getNextTwoWeeks(), []);
+  const calendarDays = useMemo(() => getFourWeekCalendarDays(), []);
+  const mobileCalendarDays = useMemo(() => getCurrentWorkWeekDays(), []);
 
   useEffect(() => {
-    fetchSessions();
-    fetchReservations(selectedDate);
-    fetchTwoWeekReservations();
-
-    const sessionsChannel = supabase
-      .channel("parking-sessions")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "parking_sessions",
-        },
-        () => {
-          fetchSessions();
-        },
-      )
-      .subscribe();
+    refreshAll();
 
     const reservationsChannel = supabase
       .channel("parking-reservations")
@@ -81,32 +90,36 @@ export default function Home() {
           table: "parking_reservations",
         },
         () => {
-          fetchReservations(selectedDate);
-          fetchTwoWeekReservations();
+          refreshAll();
+        },
+      )
+      .subscribe();
+
+    const logsChannel = supabase
+      .channel("parking-logs")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "parking_logs",
+        },
+        () => {
+          fetchLogs();
         },
       )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(sessionsChannel);
       supabase.removeChannel(reservationsChannel);
+      supabase.removeChannel(logsChannel);
     };
   }, [selectedDate]);
 
-  async function fetchSessions() {
-    const { data, error } = await supabase
-      .from("parking_sessions")
-      .select("*")
-      .order("spot_no");
-
-    if (error) {
-      console.error(error);
-      setMessage("주차 데이터를 불러오지 못했습니다.");
-      return;
-    }
-
-    setSessions(data || []);
-    setLoading(false);
+  async function refreshAll() {
+    await fetchReservations(selectedDate);
+    await fetchCalendarReservations();
+    await fetchLogs();
   }
 
   async function fetchReservations(date: string) {
@@ -114,19 +127,19 @@ export default function Home() {
       .from("parking_reservations")
       .select("*")
       .eq("reserved_date", date)
-      .order("spot_no");
+      .order("spot_no")
+      .order("time_slot");
 
     if (error) {
-      console.error(error);
-      setReservationMessage("예약 데이터를 불러오지 못했습니다.");
+      showToast("예약 데이터를 불러오지 못했습니다.", "error");
       return;
     }
 
-    setReservations(data || []);
+    setReservations((data || []) as ParkingReservation[]);
   }
 
-  async function fetchTwoWeekReservations() {
-    const days = getNextTwoWeeks();
+  async function fetchCalendarReservations() {
+    const days = getFourWeekCalendarDays();
     const startDate = days[0].date;
     const endDate = days[days.length - 1].date;
 
@@ -136,579 +149,606 @@ export default function Home() {
       .gte("reserved_date", startDate)
       .lte("reserved_date", endDate)
       .order("reserved_date")
-      .order("spot_no");
+      .order("spot_no")
+      .order("time_slot");
 
     if (error) {
-      console.error(error);
+      showToast("달력 데이터를 불러오지 못했습니다.", "error");
       return;
     }
 
-    setTwoWeekReservations(data || []);
+    setCalendarReservations((data || []) as ParkingReservation[]);
   }
 
-  const usedSpots = sessions.length;
-  const remainingSpots = TOTAL_SPOTS - usedSpots;
-  const isFull = remainingSpots === 0;
+  async function fetchLogs() {
+    const { data, error } = await supabase
+      .from("parking_logs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(20);
 
-  const occupiedSpotNumbers = new Set(
-    sessions.map((session) => session.spot_no),
-  );
+    if (error) {
+      return;
+    }
 
-  const reservedSpotNumbers = new Set(
-    reservations.map((reservation) => reservation.spot_no),
-  );
+    setLogs((data || []) as ParkingLog[]);
+  }
+
+  function showToast(
+    message: string,
+    type: "success" | "error" = "success",
+  ) {
+    setToast({ message, type });
+
+    window.setTimeout(() => {
+      setToast(null);
+    }, 2600);
+  }
+
+  function isTimeConflict(existing: TimeSlot, incoming: TimeSlot) {
+    if (existing === "full_day" || incoming === "full_day") {
+      return true;
+    }
+
+    return existing === incoming;
+  }
+
+  function findAvailableSpot(
+    dateReservations: ParkingReservation[],
+    timeSlot: TimeSlot,
+  ) {
+    for (const spotNo of [1, 2]) {
+      const spotReservations = dateReservations.filter(
+        (reservation) => reservation.spot_no === spotNo,
+      );
+
+      const hasConflict = spotReservations.some((reservation) =>
+        isTimeConflict(reservation.time_slot, timeSlot),
+      );
+
+      if (!hasConflict) {
+        return spotNo;
+      }
+    }
+
+    return null;
+  }
 
   const availableEmployees = EMPLOYEE_LIST.filter(
     (employee) =>
-      !sessions.some(
-        (session) =>
-          normalizeName(session.employee_name) === normalizeName(employee),
-      ),
-  );
-
-  const availableReservationEmployees = EMPLOYEE_LIST.filter(
-    (employee) =>
       !reservations.some(
         (reservation) =>
-          normalizeName(reservation.employee_name) === normalizeName(employee),
+          reservation.employee_name === employee &&
+          isTimeConflict(reservation.time_slot, selectedTimeSlot),
       ),
   );
 
-  const spotCards = Array.from({ length: TOTAL_SPOTS }, (_, index) => {
-    const spotNo = index + 1;
-
-    return {
-      spotNo,
-      session:
-        sessions.find((session) => session.spot_no === spotNo) ?? null,
-    };
-  });
-
-  const reservationCards = Array.from({ length: TOTAL_SPOTS }, (_, index) => {
-    const spotNo = index + 1;
-
-    return {
-      spotNo,
-      reservation:
-        reservations.find((reservation) => reservation.spot_no === spotNo) ??
-        null,
-    };
-  });
-
-  async function handleCheckIn(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!employeeName) {
-      setMessage("직원을 선택해주세요.");
-      return;
-    }
-
-    if (isFull) {
-      setMessage("현재 만차입니다.");
-      return;
-    }
-
-    const nextSpot = [1, 2].find(
-      (spotNo) => !occupiedSpotNumbers.has(spotNo),
-    );
-
-    if (!nextSpot) {
-      setMessage("빈 자리가 없습니다.");
-      return;
-    }
-
-    try {
-      const { error } = await supabase
-        .from("parking_sessions")
-        .insert({
-          employee_name: employeeName,
-          spot_no: nextSpot,
-        })
-        .select();
-
-      if (error) {
-        console.error("Supabase insert error:", error);
-        setMessage(`체크인 오류: ${error.message || "Supabase 저장 실패"}`);
-        return;
-      }
-
-      await fetchSessions();
-
-      setMessage(`${employeeName}님 체크인 완료`);
-      setEmployeeName("");
-    } catch (error) {
-      console.error("Unexpected insert error:", error);
-      setMessage("예상치 못한 체크인 오류가 발생했습니다.");
-    }
-  }
-
-  async function handleCheckOut(id: string, name: string) {
-    const { error } = await supabase
-      .from("parking_sessions")
-      .delete()
-      .eq("id", id);
+  async function createLog(
+    message: string,
+    actionType: ActionType,
+    employeeName: string,
+    targetDate?: string,
+    timeSlot?: TimeSlot,
+    spotNo?: number,
+  ) {
+    const { error } = await supabase.from("parking_logs").insert({
+      message,
+      action_type: actionType,
+      employee_name: employeeName,
+      target_date: targetDate,
+      time_slot: timeSlot,
+      spot_no: spotNo,
+    });
 
     if (error) {
-      console.error(error);
-      setMessage("체크아웃 실패");
+      showToast(`로그 저장 실패: ${error.message}`, "error");
       return;
     }
 
-    await fetchSessions();
-
-    setMessage(`${name}님 체크아웃 완료`);
-  }
-
-  async function handleReset() {
-    if (sessions.length === 0) {
-      setMessage("이미 비어있는 상태입니다.");
-      return;
-    }
-
-    const { error } = await supabase
-      .from("parking_sessions")
-      .delete()
-      .in(
-        "id",
-        sessions.map((session) => session.id),
-      );
-
-    if (error) {
-      console.error("Reset error:", error);
-      setMessage("전체 초기화 중 오류가 발생했습니다.");
-      return;
-    }
-
-    await fetchSessions();
-
-    setEmployeeName("");
-    setMessage("전체 초기화 완료");
+    await fetchLogs();
   }
 
   async function handleReservation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!selectedDate) {
-      setReservationMessage("예약 날짜를 선택해주세요.");
-      return;
-    }
-
     if (!reservationName) {
-      setReservationMessage("예약할 직원을 선택해주세요.");
+      showToast("직원을 선택해주세요.", "error");
       return;
     }
 
-    if (reservations.length >= TOTAL_SPOTS) {
-      setReservationMessage("선택한 날짜는 이미 예약이 마감되었습니다.");
-      return;
-    }
-
-    const nextSpot = [1, 2].find(
-      (spotNo) => !reservedSpotNumbers.has(spotNo),
+    const availableSpot = findAvailableSpot(
+      reservations,
+      selectedTimeSlot,
     );
 
-    if (!nextSpot) {
-      setReservationMessage("예약 가능한 자리가 없습니다.");
+    if (!availableSpot) {
+      showToast("예약 가능한 자리가 없습니다.", "error");
       return;
     }
 
-    const { error } = await supabase.from("parking_reservations").insert({
-      employee_name: reservationName,
-      reserved_date: selectedDate,
-      spot_no: nextSpot,
-    });
+    const { error } = await supabase
+      .from("parking_reservations")
+      .insert({
+        employee_name: reservationName,
+        reserved_date: selectedDate,
+        spot_no: availableSpot,
+        time_slot: selectedTimeSlot,
+      });
 
     if (error) {
-      console.error("Reservation error:", error);
-      setReservationMessage(`예약 실패: ${error.message}`);
+      showToast("예약 실패", "error");
       return;
     }
 
-    await fetchReservations(selectedDate);
-    await fetchTwoWeekReservations();
-
-    setReservationMessage(
-      `${formatDate(selectedDate)} ${reservationName}님 ${nextSpot}번 자리 예약 완료`,
+    await createLog(
+      `${reservationName}님이 ${formatDate(
+        selectedDate,
+      )} ${getTimeSlotLabel(
+        selectedTimeSlot,
+      )} ${availableSpot}번 자리를 예약했습니다.`,
+      "reserve",
+      reservationName,
+      selectedDate,
+      selectedTimeSlot,
+      availableSpot,
     );
+
+    await refreshAll();
+
+    showToast("예약 완료");
     setReservationName("");
   }
 
-  async function handleCancelReservation(id: string, name: string) {
-    const { error } = await supabase
-      .from("parking_reservations")
-      .delete()
-      .eq("id", id);
+  async function handleCancelReservation(reservation: ParkingReservation) {
+    const ok = window.confirm(
+      `${reservation.employee_name}님의 ${formatDate(
+        reservation.reserved_date,
+      )} ${getTimeSlotLabel(reservation.time_slot)} 예약을 취소할까요?`,
+    );
 
-    if (error) {
-      console.error(error);
-      setReservationMessage("예약 취소 실패");
+    if (!ok) {
       return;
     }
 
-    await fetchReservations(selectedDate);
-    await fetchTwoWeekReservations();
+    const { error } = await supabase
+      .from("parking_reservations")
+      .delete()
+      .eq("id", reservation.id);
 
-    setReservationMessage(`${name}님 예약을 취소했습니다.`);
+    if (error) {
+      showToast("예약 취소 실패", "error");
+      return;
+    }
+
+    await createLog(
+      `${reservation.employee_name}님의 ${formatDate(
+        reservation.reserved_date,
+      )} ${getTimeSlotLabel(reservation.time_slot)} 예약이 취소되었습니다.`,
+      "cancel",
+      reservation.employee_name,
+      reservation.reserved_date,
+      reservation.time_slot,
+      reservation.spot_no,
+    );
+
+    await refreshAll();
+
+    showToast("예약을 취소했습니다.");
   }
 
-  return (
-    <main className="min-h-screen bg-[#f7f8fb] text-slate-950">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-5">
-        <header className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-sm">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-medium text-slate-500">
-                BISCAT OFFICE
-              </p>
+  function renderCalendar(dayList: CalendarDay[], isMobile: boolean) {
+    return (
+      <div
+        className={
+          isMobile
+            ? "grid grid-cols-1 gap-2"
+            : "grid min-h-0 flex-1 grid-cols-7 grid-rows-4 gap-2 overflow-hidden"
+        }
+      >
+        {dayList.map((day) => {
+          const dayReservations = calendarReservations.filter(
+            (reservation) => reservation.reserved_date === day.date,
+          );
 
-              <h1 className="mt-1 text-3xl font-semibold">주차 현황</h1>
+          const isSelected = selectedDate === day.date;
 
-              <p className="mt-2 text-sm text-slate-500">
-                총 2대 중 {usedSpots}대 사용 중 · {remainingSpots}자리 남음
-              </p>
-            </div>
-
+          return (
             <div
-              className={`rounded-full px-4 py-2 text-sm font-semibold ${
-                isFull
-                  ? "bg-rose-100 text-rose-700"
-                  : "bg-emerald-100 text-emerald-700"
-              }`}
-            >
-              {isFull ? "만차" : "주차 가능"}
-            </div>
-          </div>
-        </header>
+              key={day.date}
+              role="button"
+              tabIndex={day.isCurrentRange ? 0 : -1}
+              onClick={() => {
+                if (!day.isCurrentRange) return;
+                setSelectedDate(day.date);
+              }}
+              onKeyDown={(event) => {
+                if (!day.isCurrentRange) return;
 
-        <section className="grid gap-4 md:grid-cols-2">
-          {spotCards.map((spot) => (
-            <div
-              key={spot.spotNo}
-              className={`relative min-h-[220px] rounded-2xl border p-5 shadow-sm ${
-                spot.session ? "bg-slate-950 text-white" : "bg-white"
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setSelectedDate(day.date);
+                }
+              }}
+              className={`flex min-h-[132px] flex-col rounded-2xl border p-2 text-left transition lg:min-h-0 ${
+                isSelected
+                  ? "border-slate-950 bg-slate-950 text-white"
+                  : day.isCurrentRange
+                    ? "cursor-pointer border-slate-200 bg-white hover:border-slate-400"
+                    : "cursor-not-allowed border-slate-100 bg-slate-100 text-slate-300 opacity-60"
               }`}
             >
               <div className="flex items-start justify-between">
                 <div>
-                  <p className="text-sm opacity-70">{spot.spotNo}번 자리</p>
-
-                  <h2 className="mt-3 text-3xl font-semibold">
-                    {spot.session ? spot.session.employee_name : "비어있음"}
-                  </h2>
+                  <p className="text-sm font-bold">
+                    {isMobile
+                      ? `${day.monthLabel} ${day.dayNumber}일`
+                      : day.dayNumber}
+                  </p>
+                  <p className="text-[10px] opacity-60">
+                    {isMobile ? getWeekdayLabel(day.date) : day.monthLabel}
+                  </p>
                 </div>
 
-                {spot.session && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleCheckOut(
-                        spot.session!.id,
-                        spot.session!.employee_name,
-                      )
-                    }
-                    className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-xl hover:bg-white/20"
-                  >
-                    ×
-                  </button>
+                {day.isToday && (
+                  <span className="rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-semibold text-white">
+                    오늘
+                  </span>
                 )}
               </div>
 
-              <div className="mt-10">
-                {spot.session ? (
-                  <div className="space-y-2 text-sm opacity-80">
-                    <p>입차 시간 {formatTime
-                    (spot.session.checked_in_at)}</p>
-                    <p>차량번호 {spot.session.car_number || "미등록"}</p>
-                  </div>
-                ) : (
-                  <div className="rounded-xl bg-slate-100 px-4 py-5 text-sm text-slate-500">
-                    현재 사용 가능한 자리입니다.
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-        </section>
-
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-semibold">체크인</h2>
-
-          <form
-            onSubmit={handleCheckIn}
-            className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto]"
-          >
-            <select
-              value={employeeName}
-              onChange={(event) => setEmployeeName(event.target.value)}
-              disabled={isFull}
-              className="h-12 rounded-md border border-slate-300 bg-white px-3"
-            >
-              <option value="">
-                {isFull ? "현재 만차입니다" : "직원을 선택하세요"}
-              </option>
-
-              {availableEmployees.map((employee) => (
-                <option key={employee} value={employee}>
-                  {employee}
-                </option>
-              ))}
-            </select>
-
-            <button
-              type="submit"
-              disabled={!employeeName || isFull}
-              className="h-12 rounded-md bg-slate-950 px-6 text-sm font-semibold text-white disabled:bg-slate-300"
-            >
-              체크인
-            </button>
-          </form>
-
-          <div className="mt-5 rounded-md bg-slate-100 px-4 py-3 text-sm">
-            {loading ? "불러오는 중..." : message}
-          </div>
-
-          <button
-            type="button"
-            onClick={handleReset}
-            className="mt-4 text-sm font-semibold text-rose-600"
-          >
-            전체 초기화
-          </button>
-        </section>
-
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div>
-            <h2 className="text-lg font-semibold">예약하기</h2>
-
-            <p className="mt-1 text-sm text-slate-500">
-              날짜를 선택하고 해당 날짜의 주차 자리를 예약하세요.
-            </p>
-          </div>
-
-          <form
-            onSubmit={handleReservation}
-            className="mt-5 grid gap-3 md:grid-cols-[180px_1fr_auto]"
-          >
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(event) => {
-                setSelectedDate(event.target.value);
-                setReservationName("");
-                setReservationMessage("선택한 날짜의 예약 현황입니다.");
-              }}
-              className="h-12 rounded-md border border-slate-300 bg-white px-3"
-            />
-
-            <select
-              value={reservationName}
-              onChange={(event) => setReservationName(event.target.value)}
-              disabled={reservations.length >= TOTAL_SPOTS}
-              className="h-12 rounded-md border border-slate-300 bg-white px-3"
-            >
-              <option value="">
-                {reservations.length >= TOTAL_SPOTS
-                  ? "예약 마감"
-                  : "예약할 직원을 선택하세요"}
-              </option>
-
-              {availableReservationEmployees.map((employee) => (
-                <option key={employee} value={employee}>
-                  {employee}
-                </option>
-              ))}
-            </select>
-
-            <button
-              type="submit"
-              disabled={!reservationName || reservations.length >= TOTAL_SPOTS}
-              className="h-12 rounded-md bg-slate-950 px-6 text-sm font-semibold text-white disabled:bg-slate-300"
-            >
-              예약하기
-            </button>
-          </form>
-
-          <div className="mt-5 rounded-md bg-slate-100 px-4 py-3 text-sm">
-            {reservationMessage}
-          </div>
-
-          <div className="mt-6">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-semibold text-slate-950">
-                  2주 예약 현황
-                </h3>
-
-                <p className="mt-1 text-xs text-slate-500">
-                  날짜를 클릭하면 해당 날짜 예약으로 이동합니다.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-7">
-              {twoWeekDays.map((day) => {
-                const dayReservations = twoWeekReservations.filter(
-                  (reservation) => reservation.reserved_date === day.date,
-                );
-
-                const spot1 = dayReservations.find(
-                  (reservation) => reservation.spot_no === 1,
-                );
-
-                const spot2 = dayReservations.find(
-                  (reservation) => reservation.spot_no === 2,
-                );
-
-                const isSelected = selectedDate === day.date;
-                const isFullReserved = Boolean(spot1 && spot2);
-
-                return (
-                  <button
-                    key={day.date}
-                    type="button"
-                    onClick={() => {
-                      setSelectedDate(day.date);
-                      setReservationName("");
-                      setReservationMessage(
-                        "선택한 날짜의 예약 현황입니다.",
-                      );
-                    }}
-                    className={`rounded-2xl border p-3 text-left transition ${
-                      isSelected
-                        ? "border-slate-950 bg-slate-950 text-white"
-                        : "border-slate-200 bg-white hover:border-slate-400"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-semibold">{day.label}</p>
-
-                      {day.isToday ? (
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                            isSelected
-                              ? "bg-white/15 text-white"
-                              : "bg-emerald-50 text-emerald-700"
-                          }`}
-                        >
-                          오늘
-                        </span>
-                      ) : isFullReserved ? (
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                            isSelected
-                              ? "bg-white/15 text-white"
-                              : "bg-rose-50 text-rose-700"
-                          }`}
-                        >
-                          마감
-                        </span>
-                      ) : null}
-                    </div>
-
-                    <div className="mt-3 space-y-1 text-xs">
-                      <p
-                        className={
+              <div className="mt-2 grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-1">
+                {renderSlotCells(dayReservations).map((cell) => {
+                  if (!cell.reservation) {
+                    return (
+                      <div
+                        key={cell.key}
+                        className={`rounded-lg border border-dashed px-1.5 py-1 text-[10px] leading-tight ${
                           isSelected
-                            ? "text-slate-200"
-                            : "text-slate-600"
-                        }
+                            ? "border-white/15 bg-white/5 text-white/30"
+                            : "border-slate-200 bg-slate-50 text-slate-300"
+                        } ${cell.className}`}
                       >
-                        1번: {spot1?.employee_name ?? "-"}
-                      </p>
+                        <p>{cell.label}</p>
+                      </div>
+                    );
+                  }
 
-                      <p
-                        className={
-                          isSelected
-                            ? "text-slate-200"
-                            : "text-slate-600"
-                        }
-                      >
-                        2번: {spot2?.employee_name ?? "-"}
-                      </p>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="mt-5 grid gap-3 md:grid-cols-2">
-            {reservationCards.map((item) => (
-              <div
-                key={item.spotNo}
-                className={`rounded-2xl border p-5 ${
-                  item.reservation
-                    ? "border-slate-300 bg-slate-950 text-white"
-                    : "border-dashed border-slate-300 bg-white"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm opacity-70">
-                      {item.spotNo}번 자리
-                    </p>
-
-                    <h3 className="mt-2 text-2xl font-semibold">
-                      {item.reservation
-                        ? item.reservation.employee_name
-                        : "예약 없음"}
-                    </h3>
-
-                    <p className="mt-2 text-sm opacity-70">
-                      {formatDate(selectedDate)}
-                    </p>
-                  </div>
-
-                  {item.reservation && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleCancelReservation(
-                          item.reservation!.id,
-                          item.reservation!.employee_name,
-                        )
-                      }
-                      className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-xl hover:bg-white/20"
+                  return (
+                    <div
+                      key={cell.key}
+                      className={`group relative overflow-hidden rounded-lg px-1.5 py-1 text-[10px] leading-tight ${
+                        isSelected
+                          ? "bg-white/10 text-white"
+                          : "bg-slate-100 text-slate-800"
+                      } ${cell.className}`}
                     >
-                      ×
-                    </button>
-                  )}
-                </div>
+                      <div className="flex items-start justify-between gap-1">
+                        <div className="min-w-0">
+                          <p className="font-bold">{cell.label}</p>
+                          <p className="truncate">
+                            {cell.reservation.employee_name}
+                          </p>
+                          <p className="text-[9px] opacity-60">
+                            {cell.reservation.spot_no}번
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleCancelReservation(cell.reservation!);
+                          }}
+                          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs ${
+                            isSelected
+                              ? "bg-white/10 hover:bg-white/20"
+                              : "bg-white hover:bg-rose-50 hover:text-rose-600"
+                          }`}
+                          aria-label="예약 취소"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <main className="min-h-screen overflow-y-auto bg-[#f4f6f8] p-3 text-slate-950 lg:h-screen lg:overflow-hidden lg:p-4">
+      <div className="grid min-h-screen gap-4 lg:h-full lg:min-h-0 lg:grid-cols-[7fr_3fr]">
+        <section className="flex min-h-0 flex-col rounded-3xl border border-slate-200 bg-white p-4 shadow-sm lg:p-5">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h1 className="text-xl font-bold lg:text-2xl">주차 예약 현황</h1>
+              <p className="mt-1 text-sm text-slate-500">
+                달력에서 예약을 확인하고, 예약 칩의 × 버튼으로 취소할 수 있습니다.
+              </p>
+            </div>
+
+            <div className="w-fit rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700">
+              총 예약 {calendarReservations.length}건
+            </div>
+          </div>
+
+          <div className="hidden grid-cols-7 gap-2 text-center text-xs font-semibold text-slate-500 lg:grid">
+            {WEEKDAYS.map((weekday) => (
+              <div key={weekday} className="py-2">
+                {weekday}
               </div>
             ))}
           </div>
+
+          <div className="grid grid-cols-5 gap-2 text-center text-xs font-semibold text-slate-500 lg:hidden">
+            {MOBILE_WEEKDAYS.map((weekday) => (
+              <div key={weekday} className="py-2">
+                {weekday}
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden min-h-0 flex-1 lg:flex">
+            <div className="flex min-h-0 flex-1">
+              {renderCalendar(calendarDays, false)}
+            </div>
+          </div>
+
+          <div className="lg:hidden">
+            {renderCalendar(mobileCalendarDays, true)}
+          </div>
         </section>
+
+        <aside className="grid min-h-0 gap-4 lg:grid-rows-[auto_1fr]">
+          <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm lg:p-5">
+            <div>
+              <h2 className="text-lg font-bold">예약</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                날짜와 시간대를 선택하세요.
+              </p>
+            </div>
+
+            <form onSubmit={handleReservation} className="mt-5 space-y-3">
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(event) => setSelectedDate(event.target.value)}
+                className="h-12 w-full rounded-xl border border-slate-300 px-3"
+              />
+
+              <select
+                value={selectedTimeSlot}
+                onChange={(event) =>
+                  setSelectedTimeSlot(event.target.value as TimeSlot)
+                }
+                className="h-12 w-full rounded-xl border border-slate-300 px-3"
+              >
+                {TIME_SLOTS.map((slot) => (
+                  <option key={slot.value} value={slot.value}>
+                    {slot.label}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={reservationName}
+                onChange={(event) => setReservationName(event.target.value)}
+                className="h-12 w-full rounded-xl border border-slate-300 px-3"
+              >
+                <option value="">직원 선택</option>
+
+                {availableEmployees.map((employee) => (
+                  <option key={employee} value={employee}>
+                    {employee}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="submit"
+                className="h-12 w-full rounded-xl bg-slate-950 text-sm font-semibold text-white"
+              >
+                예약하기
+              </button>
+            </form>
+          </section>
+
+          <section className="flex min-h-[320px] flex-col rounded-3xl border border-slate-200 bg-white p-4 shadow-sm lg:min-h-0 lg:p-5">
+            <div className="mb-4">
+              <h2 className="text-lg font-bold">최근 활동</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                예약 및 취소 기록
+              </p>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+              {logs.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-400">
+                  아직 활동 기록이 없습니다.
+                </div>
+              ) : (
+                logs.map((log) => (
+                  <div
+                    key={log.id}
+                    className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
+                  >
+                    <p className="text-sm font-medium text-slate-900">
+                      {log.message}
+                    </p>
+
+                    <p className="mt-1 text-xs text-slate-400">
+                      {formatDateTime(log.created_at)}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </aside>
       </div>
+
+      {toast && (
+        <div className="fixed bottom-5 left-5 right-5 z-50 lg:left-auto">
+          <div
+            className={`rounded-2xl px-5 py-4 text-sm font-medium shadow-lg ${
+              toast.type === "success"
+                ? "bg-slate-950 text-white"
+                : "bg-rose-500 text-white"
+            }`}
+          >
+            {toast.message}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
-function normalizeName(name: string) {
-  return name.trim().toLowerCase();
+function renderSlotCells(reservations: ParkingReservation[]) {
+  const spot1FullDay = reservations.find(
+    (reservation) =>
+      reservation.spot_no === 1 && reservation.time_slot === "full_day",
+  );
+
+  const spot2FullDay = reservations.find(
+    (reservation) =>
+      reservation.spot_no === 2 && reservation.time_slot === "full_day",
+  );
+
+  const spot1Morning = reservations.find(
+    (reservation) =>
+      reservation.spot_no === 1 && reservation.time_slot === "morning",
+  );
+
+  const spot1Afternoon = reservations.find(
+    (reservation) =>
+      reservation.spot_no === 1 && reservation.time_slot === "afternoon",
+  );
+
+  const spot2Morning = reservations.find(
+    (reservation) =>
+      reservation.spot_no === 2 && reservation.time_slot === "morning",
+  );
+
+  const spot2Afternoon = reservations.find(
+    (reservation) =>
+      reservation.spot_no === 2 && reservation.time_slot === "afternoon",
+  );
+
+  return [
+    {
+      key: "spot1-morning",
+      label: spot1FullDay ? "1종일" : "1오전",
+      reservation: spot1FullDay ?? spot1Morning ?? null,
+      className: spot1FullDay
+        ? "row-span-2 row-start-1 col-start-1"
+        : "row-start-1 col-start-1",
+    },
+    {
+      key: "spot2-morning",
+      label: spot2FullDay ? "2종일" : "2오전",
+      reservation: spot2FullDay ?? spot2Morning ?? null,
+      className: spot2FullDay
+        ? "row-span-2 row-start-1 col-start-2"
+        : "row-start-1 col-start-2",
+    },
+    {
+      key: "spot1-afternoon",
+      label: "1오후",
+      reservation: spot1FullDay ? null : spot1Afternoon ?? null,
+      className: spot1FullDay ? "hidden" : "row-start-2 col-start-1",
+    },
+    {
+      key: "spot2-afternoon",
+      label: "2오후",
+      reservation: spot2FullDay ? null : spot2Afternoon ?? null,
+      className: spot2FullDay ? "hidden" : "row-start-2 col-start-2",
+    },
+  ];
+}
+
+function getTimeSlotLabel(slot: TimeSlot) {
+  switch (slot) {
+    case "morning":
+      return "오전";
+    case "afternoon":
+      return "오후";
+    case "full_day":
+      return "종일";
+    default:
+      return "";
+  }
 }
 
 function getTodayString() {
-  return new Date().toISOString().slice(0, 10);
+  return toDateString(new Date());
 }
 
-function getNextTwoWeeks() {
-  return Array.from({ length: 14 }, (_, index) => {
-    const date = new Date();
+function getFourWeekCalendarDays() {
+  const today = new Date();
+  const todayString = toDateString(today);
+  const start = new Date(today);
 
-    date.setDate(date.getDate() + index);
+  start.setDate(today.getDate() - today.getDay());
 
-    const dateString = date.toISOString().slice(0, 10);
+  return Array.from({ length: 28 }, (_, index) => {
+    const date = new Date(start);
+
+    date.setDate(start.getDate() + index);
+
+    const dateString = toDateString(date);
 
     return {
       date: dateString,
-      label: new Intl.DateTimeFormat("ko-KR", {
-        month: "numeric",
-        day: "numeric",
-        weekday: "short",
+      dayNumber: date.getDate(),
+      monthLabel: new Intl.DateTimeFormat("ko-KR", {
+        month: "short",
       }).format(date),
-      isToday: index === 0,
+      isToday: dateString === todayString,
+      isCurrentRange: dateString >= todayString,
     };
   });
+}
+
+function getCurrentWorkWeekDays() {
+  const today = new Date();
+  const todayString = toDateString(today);
+  const monday = new Date(today);
+  const day = today.getDay();
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+
+  monday.setDate(today.getDate() + diffToMonday);
+
+  return Array.from({ length: 5 }, (_, index) => {
+    const date = new Date(monday);
+
+    date.setDate(monday.getDate() + index);
+
+    const dateString = toDateString(date);
+
+    return {
+      date: dateString,
+      dayNumber: date.getDate(),
+      monthLabel: new Intl.DateTimeFormat("ko-KR", {
+        month: "short",
+      }).format(date),
+      isToday: dateString === todayString,
+      isCurrentRange: dateString >= todayString,
+    };
+  });
+}
+
+function toDateString(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
 }
 
 function formatDate(date: string) {
@@ -719,9 +759,17 @@ function formatDate(date: string) {
   }).format(new Date(date));
 }
 
-function formatTime(isoDate: string) {
+function formatDateTime(date: string) {
   return new Intl.DateTimeFormat("ko-KR", {
+    month: "numeric",
+    day: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  }).format(new Date(isoDate));
+  }).format(new Date(date));
+}
+
+function getWeekdayLabel(date: string) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    weekday: "short",
+  }).format(new Date(date));
 }
