@@ -16,8 +16,7 @@ const EMPLOYEE_LIST = [
   "이준혁",
 ];
 
-const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
-const MOBILE_WEEKDAYS = ["월", "화", "수", "목", "금"];
+const WEEKDAYS = ["월", "화", "수", "목", "금"];
 
 const TIME_SLOTS = [
   { value: "morning", label: "오전" },
@@ -74,7 +73,7 @@ export default function Home() {
   const [logs, setLogs] = useState<ParkingLog[]>([]);
   const [toast, setToast] = useState<Toast | null>(null);
 
-  const calendarDays = useMemo(() => getFourWeekCalendarDays(), []);
+  const calendarDays = useMemo(() => getTwoWorkWeekDays(), []);
   const mobileCalendarDays = useMemo(() => getCurrentWorkWeekDays(), []);
 
   useEffect(() => {
@@ -139,7 +138,7 @@ export default function Home() {
   }
 
   async function fetchCalendarReservations() {
-    const days = getFourWeekCalendarDays();
+    const days = getTwoWorkWeekDays();
     const startDate = days[0].date;
     const endDate = days[days.length - 1].date;
 
@@ -300,16 +299,6 @@ export default function Home() {
   }
 
   async function handleCancelReservation(reservation: ParkingReservation) {
-    const ok = window.confirm(
-      `${reservation.employee_name}님의 ${formatDate(
-        reservation.reserved_date,
-      )} ${getTimeSlotLabel(reservation.time_slot)} 예약을 취소할까요?`,
-    );
-
-    if (!ok) {
-      return;
-    }
-
     const { error } = await supabase
       .from("parking_reservations")
       .delete()
@@ -342,7 +331,7 @@ export default function Home() {
         className={
           isMobile
             ? "grid grid-cols-1 gap-2"
-            : "grid min-h-0 flex-1 grid-cols-7 grid-rows-4 gap-2 overflow-hidden"
+            : "grid min-h-0 flex-1 grid-cols-5 grid-rows-2 gap-3 overflow-hidden"
         }
       >
         {dayList.map((day) => {
@@ -369,7 +358,7 @@ export default function Home() {
                   setSelectedDate(day.date);
                 }
               }}
-              className={`flex min-h-[132px] flex-col rounded-2xl border p-2 text-left transition lg:min-h-0 ${
+              className={`flex min-h-[132px] flex-col rounded-2xl border p-3 text-left transition lg:min-h-0 ${
                 isSelected
                   ? "border-slate-950 bg-slate-950 text-white"
                   : day.isCurrentRange
@@ -379,12 +368,12 @@ export default function Home() {
             >
               <div className="flex items-start justify-between">
                 <div>
-                  <p className="text-sm font-bold">
+                  <p className="text-base font-bold lg:text-lg">
                     {isMobile
                       ? `${day.monthLabel} ${day.dayNumber}일`
                       : day.dayNumber}
                   </p>
-                  <p className="text-[10px] opacity-60">
+                  <p className="text-[11px] opacity-60">
                     {isMobile ? getWeekdayLabel(day.date) : day.monthLabel}
                   </p>
                 </div>
@@ -396,13 +385,13 @@ export default function Home() {
                 )}
               </div>
 
-              <div className="mt-2 grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-1">
+              <div className="mt-3 grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-1.5">
                 {renderSlotCells(dayReservations).map((cell) => {
                   if (!cell.reservation) {
                     return (
                       <div
                         key={cell.key}
-                        className={`rounded-lg border border-dashed px-1.5 py-1 text-[10px] leading-tight ${
+                        className={`rounded-lg border border-dashed px-2 py-1.5 text-[11px] leading-tight ${
                           isSelected
                             ? "border-white/15 bg-white/5 text-white/30"
                             : "border-slate-200 bg-slate-50 text-slate-300"
@@ -416,30 +405,20 @@ export default function Home() {
                   return (
                     <div
                       key={cell.key}
-                      className={`group relative overflow-hidden rounded-lg px-1.5 py-1 text-[10px] leading-tight ${
+                      className={`group relative overflow-hidden rounded-lg px-2 py-1.5 text-[11px] leading-tight ${
                         isSelected
                           ? "bg-white/10 text-white"
                           : "bg-slate-100 text-slate-800"
                       } ${cell.className}`}
                     >
-                      <div className="flex items-start justify-between gap-1">
-                        <div className="min-w-0">
-                          <p className="font-bold">{cell.label}</p>
-                          <p className="truncate">
-                            {cell.reservation.employee_name}
-                          </p>
-                          <p className="text-[9px] opacity-60">
-                            {cell.reservation.spot_no}번
-                          </p>
-                        </div>
-
+                      <div className="relative flex h-full flex-col justify-end">
                         <button
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
                             handleCancelReservation(cell.reservation!);
                           }}
-                          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs ${
+                          className={`absolute right-0 top-0 flex h-5 w-5 items-center justify-center rounded-full text-xs ${
                             isSelected
                               ? "bg-white/10 hover:bg-white/20"
                               : "bg-white hover:bg-rose-50 hover:text-rose-600"
@@ -448,6 +427,20 @@ export default function Home() {
                         >
                           ×
                         </button>
+
+                        <div className="min-w-0 pr-5">
+                          <p className="text-[12px] font-bold leading-tight lg:text-[13px]">
+                            {cell.label}
+                          </p>
+
+                          <p className="mt-1 truncate text-[13px] font-semibold leading-tight lg:text-sm">
+                            {cell.reservation.employee_name}
+                          </p>
+
+                          <p className="mt-1 text-[10px] opacity-60 lg:text-[11px]">
+                            {cell.reservation.spot_no}번
+                          </p>
+                        </div>
                       </div>
                     </div>
                   );
@@ -468,7 +461,7 @@ export default function Home() {
             <div>
               <h1 className="text-xl font-bold lg:text-2xl">주차 예약 현황</h1>
               <p className="mt-1 text-sm text-slate-500">
-                달력에서 예약을 확인하고, 예약 칩의 × 버튼으로 취소할 수 있습니다.
+                평일 기준 2주 예약 현황을 확인할 수 있습니다.
               </p>
             </div>
 
@@ -477,7 +470,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="hidden grid-cols-7 gap-2 text-center text-xs font-semibold text-slate-500 lg:grid">
+          <div className="hidden grid-cols-5 gap-3 text-center text-xs font-semibold text-slate-500 lg:grid">
             {WEEKDAYS.map((weekday) => (
               <div key={weekday} className="py-2">
                 {weekday}
@@ -486,7 +479,7 @@ export default function Home() {
           </div>
 
           <div className="grid grid-cols-5 gap-2 text-center text-xs font-semibold text-slate-500 lg:hidden">
-            {MOBILE_WEEKDAYS.map((weekday) => (
+            {WEEKDAYS.map((weekday) => (
               <div key={weekday} className="py-2">
                 {weekday}
               </div>
@@ -689,17 +682,27 @@ function getTodayString() {
   return toDateString(new Date());
 }
 
-function getFourWeekCalendarDays() {
+function getMonday(date: Date) {
+  const monday = new Date(date);
+  const day = monday.getDay();
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+
+  monday.setDate(monday.getDate() + diffToMonday);
+
+  return monday;
+}
+
+function getTwoWorkWeekDays() {
   const today = new Date();
   const todayString = toDateString(today);
-  const start = new Date(today);
+  const monday = getMonday(today);
 
-  start.setDate(today.getDate() - today.getDay());
+  return Array.from({ length: 10 }, (_, index) => {
+    const weekOffset = Math.floor(index / 5) * 7;
+    const dayOffset = index % 5;
+    const date = new Date(monday);
 
-  return Array.from({ length: 28 }, (_, index) => {
-    const date = new Date(start);
-
-    date.setDate(start.getDate() + index);
+    date.setDate(monday.getDate() + weekOffset + dayOffset);
 
     const dateString = toDateString(date);
 
@@ -718,11 +721,7 @@ function getFourWeekCalendarDays() {
 function getCurrentWorkWeekDays() {
   const today = new Date();
   const todayString = toDateString(today);
-  const monday = new Date(today);
-  const day = today.getDay();
-  const diffToMonday = day === 0 ? -6 : 1 - day;
-
-  monday.setDate(today.getDate() + diffToMonday);
+  const monday = getMonday(today);
 
   return Array.from({ length: 5 }, (_, index) => {
     const date = new Date(monday);
